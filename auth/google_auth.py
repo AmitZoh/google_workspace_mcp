@@ -328,6 +328,7 @@ async def start_auth_flow(
     user_google_email: Optional[str],
     service_name: str,  # e.g., "Google Calendar", "Gmail" for user messages
     redirect_uri: str,  # Added redirect_uri as a required parameter
+    force_consent: bool = False,
 ) -> str:
     """
     Initiates the Google OAuth flow and returns an actionable message for the user.
@@ -377,7 +378,12 @@ async def start_auth_flow(
             state=oauth_state,
         )
 
-        auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+        if force_consent:
+            auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+        else:
+            # Don't force consent — lets Google show account picker for returning users
+            # and preserves existing refresh tokens (prompt=consent revokes them)
+            auth_url, _ = flow.authorization_url(access_type="offline")
 
         session_id = None
         try:
@@ -600,16 +606,20 @@ def get_credentials(
                                 user_email=user_email,
                                 access_token=credentials.token,
                                 refresh_token=credentials.refresh_token,
+                                token_uri=credentials.token_uri,
+                                client_id=credentials.client_id,
+                                client_secret=credentials.client_secret,
                                 scopes=credentials.scopes,
                                 expiry=credentials.expiry,
                                 mcp_session_id=session_id,
+                                issuer="https://accounts.google.com",
                             )
                         return credentials
                     except Exception as e:
-                        logger.error(
-                            f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}"
+                        logger.warning(
+                            f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}. "
+                            "Falling through to file-based credential store."
                         )
-                        return None
         except ImportError:
             pass  # OAuth 2.1 store not available
         except Exception as e:
@@ -908,11 +918,24 @@ async def get_authenticated_google_service(
                 f"Cannot initiate OAuth flow - callback server unavailable{error_detail}"
             )
 
+        # Only force consent (which revokes existing refresh tokens) when we
+        # don't have a stored refresh token at all. If one exists, let Google
+        # show the account picker without revoking the existing token.
+        force_consent = True
+        if user_google_email and not is_stateless_mode():
+            try:
+                existing_creds = get_credential_store().get_credential(user_google_email)
+                if existing_creds and existing_creds.refresh_token:
+                    force_consent = False
+            except Exception:
+                pass
+
         # Generate auth URL and raise exception with it
         auth_response = await start_auth_flow(
             user_google_email=user_google_email,
             service_name=f"Google {service_name.title()}",
             redirect_uri=redirect_uri,
+            force_consent=force_consent,
         )
 
         # Extract the auth URL from the response and raise with it
