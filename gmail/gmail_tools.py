@@ -71,6 +71,37 @@ def _html_to_text(html: str) -> str:
         return html
 
 
+def _extract_links_from_html(html: str) -> List[Dict[str, str]]:
+    """
+    Extract all hyperlinks from HTML content.
+
+    Args:
+        html: HTML content string
+
+    Returns:
+        List of dictionaries with 'text' and 'url' keys for each link found
+    """
+    import re
+
+    links = []
+    try:
+        # Find all <a href="...">text</a> patterns
+        # This regex handles both single and double quotes
+        pattern = r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>'
+        matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+
+        for url, text in matches:
+            # Clean up the link text (remove extra whitespace, decode entities)
+            clean_text = _html_to_text(text).strip()
+            if clean_text and url:
+                links.append({"text": clean_text, "url": url})
+
+    except Exception as e:
+        logger.warning(f"Failed to extract links from HTML: {e}")
+
+    return links
+
+
 def _extract_message_body(payload):
     """
     Helper function to extract plain text body from a Gmail message payload.
@@ -154,11 +185,12 @@ def _format_body_content(text_body: str, html_body: str) -> str:
     text_stripped = text_body.strip()
     html_stripped = html_body.strip()
 
-    # Detect useless fallback: HTML comments in text, or HTML is 50x+ longer
+    # Detect useless fallback: HTML comments in text, short text with richer HTML, or HTML is 10x+ longer
     use_html = html_stripped and (
         not text_stripped
         or "<!--" in text_stripped
-        or len(html_stripped) > len(text_stripped) * 50
+        or (len(text_stripped) < 200 and len(html_stripped) > len(text_stripped) * 3)
+        or len(html_stripped) > len(text_stripped) * 10
     )
 
     if use_html:
@@ -602,6 +634,9 @@ async def get_gmail_message_content(
     # Format body content with HTML fallback
     body_data = _format_body_content(text_body, html_body)
 
+    # Extract links from HTML if available
+    links = _extract_links_from_html(html_body) if html_body else []
+
     # Extract attachment metadata
     attachments = _extract_attachments(payload)
 
@@ -620,6 +655,13 @@ async def get_gmail_message_content(
         content_lines.append(f"Cc:      {cc}")
 
     content_lines.append(f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}")
+
+    # Add extracted links from HTML
+    if links:
+        content_lines.append("\n--- LINKS FROM EMAIL ---")
+        for i, link in enumerate(links, 1):
+            content_lines.append(f"{i}. {link['text']}")
+            content_lines.append(f"   URL: {link['url']}")
 
     # Add attachment information if present
     if attachments:
@@ -810,6 +852,9 @@ async def get_gmail_messages_content_batch(
                     # Format body content with HTML fallback
                     body_data = _format_body_content(text_body, html_body)
 
+                    # Extract links from HTML if available
+                    links = _extract_links_from_html(html_body) if html_body else []
+
                     msg_output = (
                         f"Message ID: {mid}\nSubject: {subject}\nFrom: {sender}\n"
                         f"Date: {headers.get('Date', '(unknown date)')}\n"
@@ -824,6 +869,12 @@ async def get_gmail_messages_content_batch(
                     msg_output += (
                         f"Web Link: {_generate_gmail_web_url(mid)}\n\n{body_data}\n"
                     )
+
+                    # Add extracted links from HTML
+                    if links:
+                        msg_output += "\n--- LINKS FROM EMAIL ---\n"
+                        for i, link in enumerate(links, 1):
+                            msg_output += f"{i}. {link['text']}\n   URL: {link['url']}\n"
 
                     output_messages.append(msg_output)
 
