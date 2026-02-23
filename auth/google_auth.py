@@ -620,22 +620,24 @@ def get_credentials(
                                             f"[get_credentials] Failed to persist refreshed OAuth 2.1 credentials for user {user_email}: {persist_error}"
                                         )
                         except Exception as e:
-                            logger.error(
-                                f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}"
+                            logger.warning(
+                                f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}. "
+                                "Falling through to file-based credential store."
+                            )
+                            credentials = None
+
+                    if credentials is not None:
+                        # Check scopes after refresh so stale metadata doesn't block valid tokens
+                        if not has_required_scopes(credentials.scopes, required_scopes):
+                            logger.warning(
+                                f"[get_credentials] OAuth 2.1 credentials lack required scopes. Need: {required_scopes}, Have: {credentials.scopes}"
                             )
                             return None
 
-                    # Check scopes after refresh so stale metadata doesn't block valid tokens
-                    if not has_required_scopes(credentials.scopes, required_scopes):
-                        logger.warning(
-                            f"[get_credentials] OAuth 2.1 credentials lack required scopes. Need: {required_scopes}, Have: {credentials.scopes}"
-                        )
+                        if credentials.valid:
+                            return credentials
+
                         return None
-
-                    if credentials.valid:
-                        return credentials
-
-                    return None
         except ImportError:
             pass  # OAuth 2.1 store not available
         except Exception as e:
