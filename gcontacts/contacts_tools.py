@@ -413,6 +413,58 @@ async def search_contacts(
 
 
 @server.tool()
+@require_google_service("people", "contacts_read")
+@handle_http_errors("search_directory", service_type="people")
+async def search_directory(
+    service: Resource,
+    user_google_email: str,
+    query: str,
+    page_size: int = 30,
+) -> str:
+    """
+    Search the Google Workspace company directory by name, email, or other fields.
+    Only works for Google Workspace accounts (not personal Gmail).
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        query (str): Search query string (searches names, emails, phone numbers).
+        page_size (int): Maximum number of results to return (default: 30, max: 30).
+
+    Returns:
+        str: Matching directory entries with their basic information.
+    """
+    logger.info(
+        f"[search_directory] Invoked. Email: '{user_google_email}', Query: '{query}'"
+    )
+
+    result = await asyncio.to_thread(
+        service.people()
+        .searchDirectoryPeople(
+            query=query,
+            readMask=DEFAULT_PERSON_FIELDS,
+            pageSize=min(page_size, 30),
+            sources=["DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE"],
+        )
+        .execute
+    )
+
+    people = result.get("people", [])
+
+    if not people:
+        return f"No directory results for '{query}' ({user_google_email})."
+
+    response = f"Directory Results for '{query}' ({len(people)} found):\n\n"
+
+    for person in people:
+        response += _format_contact(person) + "\n\n"
+
+    logger.info(
+        f"Found {len(people)} directory entries matching '{query}' for {user_google_email}"
+    )
+    return response
+
+
+@server.tool()
 @require_google_service("people", "contacts")
 @handle_http_errors("create_contact", service_type="people")
 async def create_contact(
