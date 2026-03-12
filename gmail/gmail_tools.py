@@ -193,6 +193,8 @@ def _format_body_content(text_body: str, html_body: str) -> str:
         or len(html_stripped) > len(text_stripped) * 10
     )
 
+    logger.info(f"[_format_body_content] text_len={len(text_stripped)}, html_len={len(html_stripped)}, use_html={use_html}")
+
     if use_html:
         content = _html_to_text(html_stripped)
         if len(content) > HTML_BODY_TRUNCATE_LIMIT:
@@ -560,6 +562,9 @@ async def search_gmail_messages(
     formatted_output = _format_gmail_results_plain(messages, query, next_page_token)
 
     logger.info(f"[search_gmail_messages] Found {len(messages)} messages")
+    if messages:
+        message_ids = [msg.get('id') for msg in messages if msg.get('id')]
+        logger.info(f"[search_gmail_messages] Message IDs: {message_ids}")
     if next_page_token:
         logger.info(
             "[search_gmail_messages] More results available (next_page_token present)"
@@ -702,6 +707,9 @@ async def get_gmail_messages_content_batch(
     """
     logger.info(
         f"[get_gmail_messages_content_batch] Invoked. Message count: {len(message_ids)}, Email: '{user_google_email}'"
+    )
+    logger.info(
+        f"[get_gmail_messages_content_batch] Message IDs: {message_ids}"
     )
 
     if not message_ids:
@@ -877,6 +885,17 @@ async def get_gmail_messages_content_batch(
                             msg_output += f"{i}. {link['text']}\n   URL: {link['url']}\n"
 
                     output_messages.append(msg_output)
+
+    # Log batch results summary
+    successful_ids = list(results.keys())
+    failed_ids = [mid for mid in message_ids if mid not in results]
+    logger.info(
+        f"[get_gmail_messages_content_batch] Batch complete. Success: {len(successful_ids)}, Failed: {len(failed_ids)}"
+    )
+    if failed_ids:
+        logger.warning(
+            f"[get_gmail_messages_content_batch] Failed message IDs: {failed_ids}"
+        )
 
     # Combine all messages with separators
     final_output = f"Retrieved {len(message_ids)} messages:\n\n"
