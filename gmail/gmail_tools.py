@@ -416,23 +416,23 @@ def _prepare_gmail_message(
     return raw_message, thread_id
 
 
-def _generate_gmail_web_url(item_id: str, account_index: int = 0) -> str:
+def _generate_gmail_web_url(item_id: str, user_email: str) -> str:
     """
     Generate Gmail web interface URL for a message or thread ID.
-    Uses #all to access messages from any Gmail folder/label (not just inbox).
+    Uses ?authuser=email so Gmail opens the correct account automatically.
 
     Args:
         item_id: Gmail message ID or thread ID
-        account_index: Google account index (default 0 for primary account)
+        user_email: Google account email address
 
     Returns:
         Gmail web interface URL that opens the message/thread in Gmail web interface
     """
-    return f"https://mail.google.com/mail/u/{account_index}/#all/{item_id}"
+    return f"https://mail.google.com/mail/?authuser={user_email}#all/{item_id}"
 
 
 def _format_gmail_results_plain(
-    messages: list, query: str, next_page_token: Optional[str] = None
+    messages: list, query: str, next_page_token: Optional[str] = None, user_email: str = ""
 ) -> str:
     """Format Gmail search results in clean, LLM-friendly plain text."""
     if not messages:
@@ -467,12 +467,12 @@ def _format_gmail_results_plain(
             thread_id = "unknown"
 
         if message_id != "unknown":
-            message_url = _generate_gmail_web_url(message_id)
+            message_url = _generate_gmail_web_url(message_id, user_email)
         else:
             message_url = "N/A"
 
         if thread_id != "unknown":
-            thread_url = _generate_gmail_web_url(thread_id)
+            thread_url = _generate_gmail_web_url(thread_id, user_email)
         else:
             thread_url = "N/A"
 
@@ -559,7 +559,7 @@ async def search_gmail_messages(
     # Extract next page token for pagination
     next_page_token = response.get("nextPageToken")
 
-    formatted_output = _format_gmail_results_plain(messages, query, next_page_token)
+    formatted_output = _format_gmail_results_plain(messages, query, next_page_token, user_email=user_google_email)
 
     logger.info(f"[search_gmail_messages] Found {len(messages)} messages")
     if messages:
@@ -840,7 +840,7 @@ async def get_gmail_messages_content_batch(
                         msg_output += f"To: {to}\n"
                     if cc:
                         msg_output += f"Cc: {cc}\n"
-                    msg_output += f"Web Link: {_generate_gmail_web_url(mid)}\n"
+                    msg_output += f"Web Link: {_generate_gmail_web_url(mid, user_google_email)}\n"
 
                     output_messages.append(msg_output)
                 else:
@@ -875,7 +875,7 @@ async def get_gmail_messages_content_batch(
                     if cc:
                         msg_output += f"Cc: {cc}\n"
                     msg_output += (
-                        f"Web Link: {_generate_gmail_web_url(mid)}\n\n{body_data}\n"
+                        f"Web Link: {_generate_gmail_web_url(mid, user_google_email)}\n\n{body_data}\n"
                     )
 
                     # Add extracted links from HTML
