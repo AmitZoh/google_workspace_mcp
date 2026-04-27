@@ -1108,6 +1108,63 @@ async def modify_event(
 
 
 @server.tool()
+@handle_http_errors("respond_to_event", service_type="calendar")
+@require_google_service("calendar", "calendar_events")
+async def respond_to_event(
+    service,
+    user_google_email: str,
+    event_id: str,
+    response: str,
+    calendar_id: str = "primary",
+) -> str:
+    """
+    Respond to a calendar event invitation (RSVP).
+
+    Uses the Calendar API's patch() method which allows non-organizers to update
+    only their own attendee response status without modifying shared event properties.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        event_id (str): The ID of the event to respond to.
+        response (str): Response status. One of: "accepted", "declined", "tentative".
+        calendar_id (str): Calendar ID (default: 'primary').
+
+    Returns:
+        str: Confirmation message of the RSVP.
+    """
+    valid_responses = {"accepted", "declined", "tentative"}
+    if response not in valid_responses:
+        return f"Invalid response '{response}'. Must be one of: {', '.join(sorted(valid_responses))}"
+
+    # Use patch() with only our attendee entry — this is allowed for non-organizers
+    patch_body = {
+        "attendees": [
+            {"email": user_google_email, "responseStatus": response}
+        ]
+    }
+
+    updated_event = await asyncio.to_thread(
+        lambda: (
+            service.events()
+            .patch(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=patch_body,
+                sendUpdates="all",
+            )
+            .execute()
+        )
+    )
+
+    summary = updated_event.get("summary", "Unknown event")
+    link = updated_event.get("htmlLink", "No link available")
+    logger.info(
+        f"Event RSVP '{response}' for {user_google_email}. Event: {summary}, ID: {event_id}"
+    )
+    return f"Successfully {response} event '{summary}' (ID: {event_id}) for {user_google_email}. Link: {link}"
+
+
+@server.tool()
 @handle_http_errors("delete_event", service_type="calendar")
 @require_google_service("calendar", "calendar_events")
 async def delete_event(
