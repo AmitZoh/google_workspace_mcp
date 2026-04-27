@@ -696,6 +696,7 @@ async def get_gmail_messages_content_batch(
     message_ids: List[str],
     user_google_email: str,
     format: Literal["full", "metadata"] = "full",
+    output_file: Optional[str] = None,
 ) -> str:
     """
     Retrieves the content of multiple Gmail messages in a single batch request.
@@ -705,9 +706,10 @@ async def get_gmail_messages_content_batch(
         message_ids (List[str]): List of Gmail message IDs to retrieve (max 25 per batch).
         user_google_email (str): The user's Google email address. Required.
         format (Literal["full", "metadata"]): Message format. "full" includes body, "metadata" only headers.
+        output_file (Optional[str]): If provided, write results directly to this file path and return only a confirmation message with the file path and size. This avoids loading large results into the LLM context window.
 
     Returns:
-        str: A formatted list of message contents including subject, sender, date, Message-ID, recipients (To, Cc), and body (if full format).
+        str: A formatted list of message contents, or a confirmation message if output_file is specified.
     """
     logger.info(
         f"[get_gmail_messages_content_batch] Invoked. Message count: {len(message_ids)}, Email: '{user_google_email}'"
@@ -926,6 +928,18 @@ async def get_gmail_messages_content_batch(
     # Combine all messages with separators
     final_output = f"Retrieved {len(message_ids)} messages:\n\n"
     final_output += "\n---\n\n".join(output_messages)
+
+    # Write to file if requested
+    if output_file:
+        import os
+        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(final_output)
+        size_kb = len(final_output.encode("utf-8")) / 1024
+        logger.info(
+            f"[get_gmail_messages_content_batch] Saved to {output_file} ({size_kb:.1f} KB)"
+        )
+        return f"Saved {len(message_ids)} messages to {output_file} ({size_kb:.1f} KB, {len(final_output)} chars)"
 
     return final_output
 
