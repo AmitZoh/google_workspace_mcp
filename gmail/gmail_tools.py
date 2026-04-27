@@ -1588,6 +1588,49 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
 
 @server.tool()
 @require_google_service("gmail", "gmail_read")
+@handle_http_errors("get_thread_labels", is_read_only=True, service_type="gmail")
+async def get_thread_labels(
+    service,
+    thread_ids: List[str],
+    user_google_email: str,
+) -> str:
+    """
+    Fetches the union of label IDs for each thread using minimal API calls.
+    Uses format="minimal" which returns only message IDs and label IDs — no headers or body.
+
+    Args:
+        thread_ids (List[str]): List of Gmail thread IDs.
+        user_google_email (str): The user's Google email address. Required.
+
+    Returns:
+        str: One line per thread: "thread_id: label1, label2, ..." (label IDs, not names).
+    """
+    logger.info(
+        f"[get_thread_labels] Fetching labels for {len(thread_ids)} threads"
+    )
+    results = []
+    for tid in thread_ids:
+        try:
+            thread = await asyncio.to_thread(
+                service.users().threads().get(
+                    userId="me", id=tid, format="minimal"
+                ).execute
+            )
+            # Union all labelIds across all messages in the thread
+            all_labels = set()
+            for msg in thread.get("messages", []):
+                all_labels.update(msg.get("labelIds", []))
+            results.append(f"{tid}: {', '.join(sorted(all_labels))}")
+        except Exception as e:
+            results.append(f"{tid}: ERROR - {e}")
+        # Brief delay between requests
+        await asyncio.sleep(0.1)
+
+    return "\n".join(results)
+
+
+@server.tool()
+@require_google_service("gmail", "gmail_read")
 @handle_http_errors("get_gmail_thread_content", is_read_only=True, service_type="gmail")
 async def get_gmail_thread_content(
     service, thread_id: str, user_google_email: str

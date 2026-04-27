@@ -4,12 +4,14 @@ gmail:
     - get_gmail_message_content
     - get_gmail_messages_content_batch
     - send_gmail_message
+    - list_gmail_labels
+    - modify_gmail_message_labels
+    - batch_modify_gmail_message_labels
+    - get_gmail_attachment_content
+    - get_thread_labels
 
   extended:
-    - get_gmail_attachment_content
     - get_gmail_thread_content
-    - modify_gmail_message_labels
-    - list_gmail_labels
     - manage_gmail_label
     - draft_gmail_message
     - list_gmail_filters
@@ -18,7 +20,6 @@ gmail:
 
   complete:
     - get_gmail_threads_content_batch
-    - batch_modify_gmail_message_labels
     - start_google_auth
 
 drive:
@@ -153,6 +154,7 @@ tasks:
 contacts:
   core:
     - search_contacts
+    - search_directory
     - get_contact
     - list_contacts
     - create_contact
