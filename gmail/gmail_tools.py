@@ -659,6 +659,10 @@ async def get_gmail_message_content(
     if cc:
         content_lines.append(f"Cc:      {cc}")
 
+    label_ids = message_metadata.get("labelIds", [])
+    if label_ids:
+        content_lines.append(f"Labels:  {', '.join(label_ids)}")
+
     content_lines.append(f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}")
 
     # Add extracted links from HTML
@@ -842,6 +846,10 @@ async def get_gmail_messages_content_batch(
                         msg_output += f"Cc: {cc}\n"
                     msg_output += f"Web Link: {_generate_gmail_web_url(mid, user_google_email)}\n"
 
+                    label_ids = message.get("labelIds", [])
+                    if label_ids:
+                        msg_output += f"Labels: {', '.join(label_ids)}\n"
+
                     output_messages.append(msg_output)
                 else:
                     # Full format - extract body too
@@ -863,6 +871,9 @@ async def get_gmail_messages_content_batch(
                     # Extract links from HTML if available
                     links = _extract_links_from_html(html_body) if html_body else []
 
+                    # Extract attachment metadata
+                    attachments = _extract_attachments(payload)
+
                     msg_output = (
                         f"Message ID: {mid}\nSubject: {subject}\nFrom: {sender}\n"
                         f"Date: {headers.get('Date', '(unknown date)')}\n"
@@ -874,15 +885,30 @@ async def get_gmail_messages_content_batch(
                         msg_output += f"To: {to}\n"
                     if cc:
                         msg_output += f"Cc: {cc}\n"
-                    msg_output += (
-                        f"Web Link: {_generate_gmail_web_url(mid, user_google_email)}\n\n{body_data}\n"
-                    )
+                    msg_output += f"Web Link: {_generate_gmail_web_url(mid, user_google_email)}\n"
+
+                    label_ids = message.get("labelIds", [])
+                    if label_ids:
+                        msg_output += f"Labels: {', '.join(label_ids)}\n"
+
+                    msg_output += f"\n{body_data}\n"
 
                     # Add extracted links from HTML
                     if links:
                         msg_output += "\n--- LINKS FROM EMAIL ---\n"
                         for i, link in enumerate(links, 1):
                             msg_output += f"{i}. {link['text']}\n   URL: {link['url']}\n"
+
+                    # Add attachment information if present
+                    if attachments:
+                        msg_output += "\n--- ATTACHMENTS ---\n"
+                        for i, att in enumerate(attachments, 1):
+                            size_kb = att["size"] / 1024
+                            msg_output += (
+                                f"{i}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
+                                f"   Attachment ID: {att['attachmentId']}\n"
+                                f"   Use get_gmail_attachment_content(message_id='{mid}', attachment_id='{att['attachmentId']}') to download\n"
+                            )
 
                     output_messages.append(msg_output)
 
