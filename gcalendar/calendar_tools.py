@@ -1069,6 +1069,38 @@ async def modify_event(
     elif add_google_meet is False:
         confirmation_message += " (Google Meet removed)"
 
+    # Include the pre-change event state so callers can roll back exactly.
+    # Emitted as a labeled JSON block; fields limited to those commonly mutated
+    # by modify_event plus organizer (for non-organizer detection by callers).
+    rollback_fields = {
+        k: existing_event.get(k)
+        for k in (
+            "summary",
+            "description",
+            "location",
+            "start",
+            "end",
+            "reminders",
+            "attendees",
+            "transparency",
+            "visibility",
+            "colorId",
+            "conferenceData",
+            "guestsCanModify",
+            "guestsCanInviteOthers",
+            "guestsCanSeeOtherGuests",
+            "organizer",
+            "creator",
+            "recurringEventId",
+        )
+        if k in existing_event
+    }
+    confirmation_message += (
+        "\n\n--- BEFORE_STATE (verbatim for rollback) ---\n"
+        + json.dumps(rollback_fields, ensure_ascii=False, indent=2)
+        + "\n--- END BEFORE_STATE ---"
+    )
+
     logger.info(
         f"Event modified successfully for {user_google_email}. ID: {updated_event.get('id')}, Link: {link}"
     )
