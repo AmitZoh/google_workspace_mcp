@@ -124,3 +124,88 @@ async def test_resolve_reply_context_uses_metadata_format():
     assert call_kwargs["format"] == "metadata"
     assert "Message-ID" in call_kwargs["metadataHeaders"]
     assert "References" in call_kwargs["metadataHeaders"]
+
+
+def test_gmail_metadata_headers_includes_reply_to():
+    """GMAIL_METADATA_HEADERS must include Reply-To so the metadata-format
+    Gmail API returns it. Without this, Reply-To is silently dropped from
+    every formatted message-content response, and the process-email skill's
+    no-reply detection cannot distinguish replyable senders (GitHub, mailing
+    lists) from genuinely no-reply senders."""
+    from gmail.gmail_tools import GMAIL_METADATA_HEADERS
+
+    assert "Reply-To" in GMAIL_METADATA_HEADERS
+
+
+def test_format_gmail_message_content_emits_reply_to_when_present():
+    """When headers include Reply-To, the formatted output must contain a
+    'Reply-To: ...' line between From and Date. The process-email skill's
+    no-reply detection depends on this — without it, replyable notification
+    senders (GitHub, mailing lists) get false-warned."""
+    from gmail.gmail_tools import _format_gmail_message_content
+
+    headers = {
+        "Subject": "Test",
+        "From": "noreply@github.com",
+        "Reply-To": "<token>@reply.github.com",
+        "Date": "Tue, 28 Apr 2026 10:00:00 +0000",
+        "Message-ID": "<m1@example.com>",
+        "To": "user@example.com",
+    }
+    result = _format_gmail_message_content(
+        headers=headers, body_data="hello", links=[], attachments=[], label_ids=["INBOX"],
+        message_id="m-test"
+    )
+
+    assert "Reply-To: <token>@reply.github.com" in result
+    from_pos = result.index("From:")
+    reply_to_pos = result.index("Reply-To:")
+    date_pos = result.index("Date:")
+    assert from_pos < reply_to_pos < date_pos
+
+
+def test_format_gmail_message_content_omits_reply_to_when_absent():
+    """When headers do not include Reply-To, the formatted output must NOT
+    contain a 'Reply-To:' line — not even an empty one. Backwards compat
+    with downstream parsers that expect no Reply-To line on legacy messages."""
+    from gmail.gmail_tools import _format_gmail_message_content
+
+    headers = {
+        "Subject": "Test",
+        "From": "alice@example.com",
+        "Date": "Tue, 28 Apr 2026 10:00:00 +0000",
+        "Message-ID": "<m2@example.com>",
+        "To": "user@example.com",
+    }
+    result = _format_gmail_message_content(
+        headers=headers, body_data="hello", links=[], attachments=[], label_ids=["INBOX"],
+        message_id="m-test"
+    )
+
+    assert "Reply-To:" not in result
+
+
+def test_format_gmail_message_content_preserves_existing_field_order():
+    """Backwards compatibility: existing fields must appear in the same order
+    as before this change so parsers in the process-email skill continue to
+    work. The order is Subject, From, [Reply-To?], Date, Message-ID, To, Cc, Labels."""
+    from gmail.gmail_tools import _format_gmail_message_content
+
+    headers = {
+        "Subject": "Test",
+        "From": "alice@example.com",
+        "Date": "Tue, 28 Apr 2026 10:00:00 +0000",
+        "Message-ID": "<m3@example.com>",
+        "To": "user@example.com",
+        "Cc": "bob@example.com",
+    }
+    result = _format_gmail_message_content(
+        headers=headers, body_data="hello", links=[], attachments=[], label_ids=["INBOX", "STARRED"],
+        message_id="m-test"
+    )
+
+    expected_order = ["Subject:", "From:", "Date:", "Message-ID:", "To:", "Cc:", "Labels:"]
+    positions = [result.index(field) for field in expected_order]
+    assert positions == sorted(positions), (
+        f"Field order regression: {expected_order} appeared at positions {positions}"
+    )

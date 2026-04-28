@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 GMAIL_BATCH_SIZE = 25
 GMAIL_REQUEST_DELAY = 0.1
 HTML_BODY_TRUNCATE_LIMIT = 20000
-GMAIL_METADATA_HEADERS = ["Subject", "From", "To", "Cc", "Message-ID", "Date"]
+GMAIL_METADATA_HEADERS = ["Subject", "From", "To", "Cc", "Reply-To", "Message-ID", "Date"]
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -630,6 +630,70 @@ async def search_gmail_messages(
     return formatted_output
 
 
+def _format_gmail_message_content(
+    *,
+    headers: dict,
+    body_data: str,
+    links: list,
+    attachments: list,
+    label_ids: list,
+    message_id: str,
+) -> str:
+    """Build the human-readable content string for get_gmail_message_content.
+
+    Extracted as a synchronous helper so the tool's decorators
+    (server.tool / require_google_service) don't block unit testing.
+    Output is byte-identical to the previous inline implementation
+    EXCEPT that an additional 'Reply-To: ...' line is emitted between
+    From and Date when the Reply-To header is present.
+    """
+    subject = headers.get("Subject", "(no subject)")
+    sender = headers.get("From", "(unknown sender)")
+    to = headers.get("To", "")
+    cc = headers.get("Cc", "")
+    reply_to = headers.get("Reply-To", "")
+    rfc822_msg_id = headers.get("Message-ID", "")
+
+    content_lines = [
+        f"Subject: {subject}",
+        f"From:    {sender}",
+    ]
+    if reply_to:
+        content_lines.append(f"Reply-To: {reply_to}")
+    content_lines.append(f"Date:    {headers.get('Date', '(unknown date)')}")
+
+    if rfc822_msg_id:
+        content_lines.append(f"Message-ID: {rfc822_msg_id}")
+
+    if to:
+        content_lines.append(f"To:      {to}")
+    if cc:
+        content_lines.append(f"Cc:      {cc}")
+
+    if label_ids:
+        content_lines.append(f"Labels:  {', '.join(label_ids)}")
+
+    content_lines.append(f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}")
+
+    if links:
+        content_lines.append("\n--- LINKS FROM EMAIL ---")
+        for i, link in enumerate(links, 1):
+            content_lines.append(f"{i}. {link['text']}")
+            content_lines.append(f"   URL: {link['url']}")
+
+    if attachments:
+        content_lines.append("\n--- ATTACHMENTS ---")
+        for i, att in enumerate(attachments, 1):
+            size_kb = att["size"] / 1024
+            content_lines.append(
+                f"{i}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
+                f"   Attachment ID: {att['attachmentId']}\n"
+                f"   Use get_gmail_attachment_content(message_id='{message_id}', attachment_id='{att['attachmentId']}') to download"
+            )
+
+    return "\n".join(content_lines)
+
+
 @server.tool()
 @handle_http_errors(
     "get_gmail_message_content", is_read_only=True, service_type="gmail"
@@ -646,7 +710,8 @@ async def get_gmail_message_content(
         user_google_email (str): The user's Google email address. Required.
 
     Returns:
-        str: The message details including subject, sender, date, Message-ID, recipients (To, Cc), and body content.
+        str: The message details including subject, sender, Reply-To (when present),
+             date, Message-ID, recipients (To, Cc), and body content.
     """
     logger.info(
         f"[get_gmail_message_content] Invoked. Message ID: '{message_id}', Email: '{user_google_email}'"
@@ -670,11 +735,6 @@ async def get_gmail_message_content(
     headers = _extract_headers(
         message_metadata.get("payload", {}), GMAIL_METADATA_HEADERS
     )
-    subject = headers.get("Subject", "(no subject)")
-    sender = headers.get("From", "(unknown sender)")
-    to = headers.get("To", "")
-    cc = headers.get("Cc", "")
-    rfc822_msg_id = headers.get("Message-ID", "")
 
     # Now fetch the full message to get the body parts
     message_full = await asyncio.to_thread(
@@ -694,54 +754,19 @@ async def get_gmail_message_content(
     text_body = bodies.get("text", "")
     html_body = bodies.get("html", "")
 
-    # Format body content with HTML fallback
     body_data = _format_body_content(text_body, html_body)
-
-    # Extract links from HTML if available
     links = _extract_links_from_html(html_body) if html_body else []
-
-    # Extract attachment metadata
     attachments = _extract_attachments(payload)
-
-    content_lines = [
-        f"Subject: {subject}",
-        f"From:    {sender}",
-        f"Date:    {headers.get('Date', '(unknown date)')}",
-    ]
-
-    if rfc822_msg_id:
-        content_lines.append(f"Message-ID: {rfc822_msg_id}")
-
-    if to:
-        content_lines.append(f"To:      {to}")
-    if cc:
-        content_lines.append(f"Cc:      {cc}")
-
     label_ids = message_metadata.get("labelIds", [])
-    if label_ids:
-        content_lines.append(f"Labels:  {', '.join(label_ids)}")
 
-    content_lines.append(f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}")
-
-    # Add extracted links from HTML
-    if links:
-        content_lines.append("\n--- LINKS FROM EMAIL ---")
-        for i, link in enumerate(links, 1):
-            content_lines.append(f"{i}. {link['text']}")
-            content_lines.append(f"   URL: {link['url']}")
-
-    # Add attachment information if present
-    if attachments:
-        content_lines.append("\n--- ATTACHMENTS ---")
-        for i, att in enumerate(attachments, 1):
-            size_kb = att["size"] / 1024
-            content_lines.append(
-                f"{i}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
-                f"   Attachment ID: {att['attachmentId']}\n"
-                f"   Use get_gmail_attachment_content(message_id='{message_id}', attachment_id='{att['attachmentId']}') to download"
-            )
-
-    return "\n".join(content_lines)
+    return _format_gmail_message_content(
+        headers=headers,
+        body_data=body_data,
+        links=links,
+        attachments=attachments,
+        label_ids=label_ids,
+        message_id=message_id,
+    )
 
 
 @server.tool()
