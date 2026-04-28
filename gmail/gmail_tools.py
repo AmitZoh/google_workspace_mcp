@@ -632,11 +632,11 @@ async def search_gmail_messages(
 
 def _format_gmail_message_content(
     *,
-    headers: dict,
+    headers: Dict[str, str],
     body_data: str,
-    links: list,
-    attachments: list,
-    label_ids: list,
+    links: List[Dict[str, str]],
+    attachments: List[Dict[str, Any]],
+    label_ids: List[str],
     message_id: str,
 ) -> str:
     """Build the human-readable content string for get_gmail_message_content.
@@ -651,7 +651,7 @@ def _format_gmail_message_content(
     sender = headers.get("From", "(unknown sender)")
     to = headers.get("To", "")
     cc = headers.get("Cc", "")
-    reply_to = headers.get("Reply-To", "")
+    reply_to = headers.get("Reply-To", "")  # absent → "" → line is omitted; relies on _extract_headers' contract that present headers are non-None strings
     rfc822_msg_id = headers.get("Message-ID", "")
 
     content_lines = [
