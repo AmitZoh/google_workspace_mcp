@@ -24,6 +24,7 @@ from auth.service_decorator import require_google_service
 from core.utils import handle_http_errors, validate_file_path
 from core.server import server
 from auth.scopes import (
+    GMAIL_READONLY_SCOPE,
     GMAIL_SEND_SCOPE,
     GMAIL_COMPOSE_SCOPE,
     GMAIL_MODIFY_SCOPE,
@@ -260,6 +261,63 @@ def _extract_headers(payload: dict, header_names: List[str]) -> Dict[str, str]:
             # Store using the original requested casing
             headers[target_headers[header_name_lower]] = header["value"]
     return headers
+
+
+async def _resolve_reply_context(
+    service, reply_to_message_id: str
+) -> tuple[str, str, str]:
+    """
+    Look up the original message and derive the threading triple needed for a
+    proper RFC 5322 reply: (thread_id, in_reply_to, references).
+
+    Callers pass only the original Gmail message ID (the same value the
+    /sort-email briefing embeds as `<!-- msg:... -->`) and let this helper
+    fetch the rest. This removes the footgun of passing a message ID where a
+    thread ID is expected.
+
+    Args:
+        service: An authenticated Gmail API service.
+        reply_to_message_id: Gmail message ID of the message being replied to.
+
+    Returns:
+        (thread_id, in_reply_to, references) — all non-empty strings.
+
+    Raises:
+        ValueError: if the original message has no Message-ID header (extremely
+            rare, but signals a malformed source message rather than silently
+            producing an unthreaded reply).
+        Any exception raised by the Gmail API call propagates unchanged so the
+            outer @handle_http_errors decorator on the calling tool can format
+            it for the user.
+    """
+    message = await asyncio.to_thread(
+        service.users()
+        .messages()
+        .get(
+            userId="me",
+            id=reply_to_message_id,
+            format="metadata",
+            metadataHeaders=["Message-ID", "References"],
+        )
+        .execute
+    )
+
+    thread_id = message.get("threadId")
+    headers = _extract_headers(message.get("payload", {}), ["Message-ID", "References"])
+    original_message_id = headers.get("Message-ID")
+    if not original_message_id:
+        raise ValueError(
+            f"Cannot build reply: original message {reply_to_message_id!r} has no Message-ID header."
+        )
+
+    existing_references = headers.get("References")
+    references = (
+        f"{existing_references} {original_message_id}"
+        if existing_references
+        else original_message_id
+    )
+
+    return thread_id, original_message_id, references
 
 
 def _prepare_gmail_message(
@@ -1125,7 +1183,7 @@ async def get_gmail_attachment_content(
 
 @server.tool()
 @handle_http_errors("send_gmail_message", service_type="gmail")
-@require_google_service("gmail", GMAIL_SEND_SCOPE)
+@require_google_service("gmail", [GMAIL_SEND_SCOPE, GMAIL_READONLY_SCOPE])
 async def send_gmail_message(
     service,
     user_google_email: str,
@@ -1174,6 +1232,12 @@ async def send_gmail_message(
             description="Optional chain of Message-IDs for proper threading.",
         ),
     ] = None,
+    reply_to_message_id: Annotated[
+        Optional[str],
+        Field(
+            description="Optional Gmail message ID of the message being replied to. When provided, the server fetches the original message and auto-derives `thread_id`, `in_reply_to`, and `references` so the reply threads correctly. Pass this instead of building those three by hand. If any of `thread_id`/`in_reply_to`/`references` are also supplied, they take precedence over the auto-derived values.",
+        ),
+    ] = None,
     attachments: Annotated[
         Optional[List[Dict[str, str]]],
         Field(
@@ -1209,6 +1273,11 @@ async def send_gmail_message(
         thread_id (Optional[str]): Optional Gmail thread ID to reply within. When provided, sends a reply.
         in_reply_to (Optional[str]): Optional Message-ID of the message being replied to. Used for proper threading.
         references (Optional[str]): Optional chain of Message-IDs for proper threading. Should include all previous Message-IDs.
+        reply_to_message_id (Optional[str]): Optional Gmail message ID of the message being replied to.
+            When provided, the server fetches the original message and auto-derives `thread_id`,
+            `in_reply_to`, and `references`. Prefer this over building those three by hand.
+            If any of `thread_id`/`in_reply_to`/`references` are also supplied, they take
+            precedence over the auto-derived values.
 
     Returns:
         str: Confirmation message with the sent email's message ID.
@@ -1267,7 +1336,15 @@ async def send_gmail_message(
             }]
         )
 
-        # Send a reply
+        # Send a reply (preferred — let the server resolve threading from the original message ID)
+        send_gmail_message(
+            to="user@example.com",
+            subject="Thanks for the update!",
+            body="Got it.",
+            reply_to_message_id="19dc9a99f5eb72c7",
+        )
+
+        # Send a reply (manual — supply thread_id / in_reply_to / references yourself)
         send_gmail_message(
             to="user@example.com",
             subject="Re: Meeting tomorrow",
@@ -1280,6 +1357,14 @@ async def send_gmail_message(
     logger.info(
         f"[send_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}', Attachments: {len(attachments) if attachments else 0}"
     )
+
+    if reply_to_message_id:
+        resolved_thread, resolved_irt, resolved_refs = await _resolve_reply_context(
+            service, reply_to_message_id
+        )
+        thread_id = thread_id or resolved_thread
+        in_reply_to = in_reply_to or resolved_irt
+        references = references or resolved_refs
 
     # Prepare the email message
     # Use from_email (Send As alias) if provided, otherwise default to authenticated user
@@ -1318,7 +1403,7 @@ async def send_gmail_message(
 
 @server.tool()
 @handle_http_errors("draft_gmail_message", service_type="gmail")
-@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+@require_google_service("gmail", [GMAIL_COMPOSE_SCOPE, GMAIL_READONLY_SCOPE])
 async def draft_gmail_message(
     service,
     user_google_email: str,
@@ -1372,6 +1457,12 @@ async def draft_gmail_message(
             description="Optional chain of Message-IDs for proper threading.",
         ),
     ] = None,
+    reply_to_message_id: Annotated[
+        Optional[str],
+        Field(
+            description="Optional Gmail message ID of the message being replied to. When provided, the server fetches the original message and auto-derives `thread_id`, `in_reply_to`, and `references` so the reply threads correctly. Pass this instead of building those three by hand. If any of `thread_id`/`in_reply_to`/`references` are also supplied, they take precedence over the auto-derived values.",
+        ),
+    ] = None,
     attachments: Annotated[
         Optional[List[Dict[str, str]]],
         Field(
@@ -1398,6 +1489,11 @@ async def draft_gmail_message(
         thread_id (Optional[str]): Optional Gmail thread ID to reply within. When provided, creates a reply draft.
         in_reply_to (Optional[str]): Optional Message-ID of the message being replied to. Used for proper threading.
         references (Optional[str]): Optional chain of Message-IDs for proper threading. Should include all previous Message-IDs.
+        reply_to_message_id (Optional[str]): Optional Gmail message ID of the message being replied to.
+            When provided, the server fetches the original message and auto-derives `thread_id`,
+            `in_reply_to`, and `references`. Prefer this over building those three by hand.
+            If any of `thread_id`/`in_reply_to`/`references` are also supplied, they take
+            precedence over the auto-derived values.
         attachments (List[Dict[str, str]]): Optional list of attachments. Each dict can contain:
             Option 1 - File path (auto-encodes):
               - 'path' (required): File path to attach
@@ -1442,7 +1538,15 @@ async def draft_gmail_message(
             bcc="archive@example.com"
         )
 
-        # Create a reply draft in plaintext
+        # Create a reply draft (preferred — let the server resolve threading from the original message ID)
+        draft_gmail_message(
+            subject="Thanks for the update!",
+            body="Got it.",
+            to="user@example.com",
+            reply_to_message_id="19dc9a99f5eb72c7",
+        )
+
+        # Create a reply draft in plaintext (manual threading)
         draft_gmail_message(
             subject="Re: Meeting tomorrow",
             body="Thanks for the update!",
@@ -1466,6 +1570,14 @@ async def draft_gmail_message(
     logger.info(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
+
+    if reply_to_message_id:
+        resolved_thread, resolved_irt, resolved_refs = await _resolve_reply_context(
+            service, reply_to_message_id
+        )
+        thread_id = thread_id or resolved_thread
+        in_reply_to = in_reply_to or resolved_irt
+        references = references or resolved_refs
 
     # Prepare the email message
     # Use from_email (Send As alias) if provided, otherwise default to authenticated user
