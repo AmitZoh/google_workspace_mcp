@@ -521,6 +521,34 @@ async def create_drive_folder(
     )
 
 
+async def _resolve_folder_id_permissive(service, folder_id: str) -> str:
+    """
+    Like resolve_folder_id but tolerates the 403/404 that the narrow drive.file
+    OAuth scope produces on files.get for folders the app didn't create.
+
+    Drive's files.create accepts parents=[folder_id] under drive.file even when
+    files.get on that folder is denied — Google only blocks *visibility*, not
+    *parent assignment*. So when the pre-check is denied, fall through with the
+    raw folder_id and let the subsequent files.create be the source of truth.
+
+    Trade-off: skips shortcut following and folder-type verification on the
+    fallback path. Acceptable because (a) shortcuts the app didn't create are
+    invisible under drive.file anyway, and (b) a bad folder_id (non-folder,
+    truly inaccessible) still fails loudly at files.create.
+    """
+    try:
+        return await resolve_folder_id(service, folder_id)
+    except HttpError as e:
+        if e.resp.status in (403, 404) and folder_id != "root":
+            logger.info(
+                f"[_resolve_folder_id_permissive] resolve_folder_id failed with "
+                f"{e.resp.status} for '{folder_id}' (likely drive.file scope); "
+                "proceeding with raw id."
+            )
+            return folder_id
+        raise
+
+
 @server.tool()
 @handle_http_errors("create_drive_file", service_type="drive")
 @require_google_service("drive", "drive_file")
@@ -564,7 +592,7 @@ async def create_drive_file(
         return await _create_drive_folder_impl(service, user_google_email, file_name, folder_id)
 
     file_data = None
-    resolved_folder_id = await resolve_folder_id(service, folder_id)
+    resolved_folder_id = await _resolve_folder_id_permissive(service, folder_id)
 
     file_metadata = {
         "name": file_name,

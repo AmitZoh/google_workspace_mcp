@@ -9,7 +9,17 @@ from unittest.mock import Mock, AsyncMock, patch
 import sys
 import os
 
+from googleapiclient.errors import HttpError
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
+
+def _make_http_error(status: int, reason: str = "notFound") -> HttpError:
+    """Build an HttpError mimicking what google-api-python-client raises."""
+    resp = Mock()
+    resp.status = status
+    resp.reason = reason
+    return HttpError(resp=resp, content=b'{"error": {"message": "test"}}')
 
 
 @pytest.mark.asyncio
@@ -44,3 +54,81 @@ async def test_create_drive_folder():
     assert "folder123" in result
     assert "user@example.com" in result
     assert "https://drive.google.com/drive/folders/folder123" in result
+
+
+@pytest.mark.asyncio
+async def test_resolve_folder_id_permissive_passes_through_on_success():
+    """When resolve_folder_id succeeds, return its result unchanged."""
+    from gdrive.drive_tools import _resolve_folder_id_permissive
+
+    with patch(
+        "gdrive.drive_tools.resolve_folder_id",
+        new_callable=AsyncMock,
+        return_value="resolved_target_id",
+    ):
+        result = await _resolve_folder_id_permissive(Mock(), "shortcut_id")
+
+    assert result == "resolved_target_id"
+
+
+@pytest.mark.asyncio
+async def test_resolve_folder_id_permissive_falls_back_on_404():
+    """Under drive.file scope, files.get 404s on user-created folders.
+    The helper must fall through with the raw folder_id."""
+    from gdrive.drive_tools import _resolve_folder_id_permissive
+
+    with patch(
+        "gdrive.drive_tools.resolve_folder_id",
+        new_callable=AsyncMock,
+        side_effect=_make_http_error(404),
+    ):
+        result = await _resolve_folder_id_permissive(Mock(), "user_folder_id")
+
+    assert result == "user_folder_id"
+
+
+@pytest.mark.asyncio
+async def test_resolve_folder_id_permissive_falls_back_on_403():
+    """403 (PermissionDenied) on the pre-check is also a drive.file symptom."""
+    from gdrive.drive_tools import _resolve_folder_id_permissive
+
+    with patch(
+        "gdrive.drive_tools.resolve_folder_id",
+        new_callable=AsyncMock,
+        side_effect=_make_http_error(403, "forbidden"),
+    ):
+        result = await _resolve_folder_id_permissive(Mock(), "user_folder_id")
+
+    assert result == "user_folder_id"
+
+
+@pytest.mark.asyncio
+async def test_resolve_folder_id_permissive_propagates_other_http_errors():
+    """500/400/etc. are not scope-related; the original error must propagate."""
+    from gdrive.drive_tools import _resolve_folder_id_permissive
+
+    err = _make_http_error(500, "serverError")
+    with patch(
+        "gdrive.drive_tools.resolve_folder_id",
+        new_callable=AsyncMock,
+        side_effect=err,
+    ):
+        with pytest.raises(HttpError) as exc_info:
+            await _resolve_folder_id_permissive(Mock(), "user_folder_id")
+
+    assert exc_info.value.resp.status == 500
+
+
+@pytest.mark.asyncio
+async def test_resolve_folder_id_permissive_does_not_fall_back_for_root():
+    """folder_id='root' failing is a real config problem, not a scope issue —
+    the user can always GET their own root. Propagate."""
+    from gdrive.drive_tools import _resolve_folder_id_permissive
+
+    with patch(
+        "gdrive.drive_tools.resolve_folder_id",
+        new_callable=AsyncMock,
+        side_effect=_make_http_error(404),
+    ):
+        with pytest.raises(HttpError):
+            await _resolve_folder_id_permissive(Mock(), "root")
