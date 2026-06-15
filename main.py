@@ -45,6 +45,33 @@ logger = logging.getLogger(__name__)
 configure_file_logging()
 
 
+def _parse_readonly_arg(value: str):
+    """argparse type= callback for --read-only's optional comma-separated value.
+
+    Returns the sentinel "__all__" for an empty value (treated as "everything
+    readonly" same as the no-value form). Otherwise returns a sorted, deduped
+    list of validated tool-group names. Raises ArgumentTypeError on unknown
+    names, listing the valid vocabulary.
+    """
+    from auth.scopes import TOOL_SCOPES_MAP  # lazy: avoid load-order surprises
+
+    # argparse passes the no-value sentinel through type= as well; accept it verbatim.
+    if value == "__all__":
+        return "__all__"
+
+    valid = set(TOOL_SCOPES_MAP.keys())
+    requested = [name.strip() for name in value.split(",") if name.strip()]
+    if not requested:
+        return "__all__"
+    unknown = [n for n in requested if n not in valid]
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown tool name(s) for --read-only: {', '.join(unknown)}. "
+            f"Valid names: {', '.join(sorted(valid))}"
+        )
+    return sorted(set(requested))
+
+
 def safe_print(text):
     # Don't print in CLI mode - we want clean output
     if _CLI_MODE:
@@ -152,8 +179,16 @@ def main():
     )
     parser.add_argument(
         "--read-only",
-        action="store_true",
-        help="Run in read-only mode - requests only read-only scopes and disables tools requiring write permissions",
+        nargs="?",
+        const="__all__",
+        default=None,
+        type=_parse_readonly_arg,
+        metavar="TOOLS",
+        help=(
+            "Read-only mode. Without value: all tools readonly. With value (comma-separated "
+            "tool-group names, e.g. 'drive,calendar'): only those tools are downgraded to "
+            "their read-only scope set; others stay at full scope. Composes with --tools."
+        ),
     )
     args = parser.parse_args()
 
@@ -182,8 +217,10 @@ def main():
         safe_print(f"   🔗 URL: {display_url}")
         safe_print(f"   🔐 OAuth Callback: {display_url}/oauth2callback")
     safe_print(f"   👤 Mode: {'Single-user' if args.single_user else 'Multi-user'}")
-    if args.read_only:
-        safe_print("   🔒 Read-Only: Enabled")
+    if args.read_only == "__all__":
+        safe_print("   🔒 Read-Only: All tools")
+    elif args.read_only:
+        safe_print(f"   🔒 Read-Only: {', '.join(args.read_only)}")
     safe_print(f"   🐍 Python: {sys.version.split()[0]}")
     safe_print("")
 
@@ -296,11 +333,13 @@ def main():
 
     wrap_server_tool_method(server)
 
-    from auth.scopes import set_enabled_tools, set_read_only
+    from auth.scopes import set_enabled_tools, set_read_only, set_readonly_tools
 
     set_enabled_tools(list(tools_to_import))
-    if args.read_only:
+    if args.read_only == "__all__":
         set_read_only(True)
+    elif args.read_only:
+        set_readonly_tools(args.read_only)
 
     safe_print(
         f"🛠️  Loading {len(tools_to_import)} tool module{'s' if len(tools_to_import) != 1 else ''}:"

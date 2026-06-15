@@ -27,9 +27,14 @@ from auth.scopes import (
     GMAIL_SETTINGS_BASIC_SCOPE,
     SHEETS_READONLY_SCOPE,
     SHEETS_WRITE_SCOPE,
+    get_allowed_scopes_for_filter,
+    get_readonly_tools,
     get_scopes_for_tools,
     has_required_scopes,
+    is_read_only_mode,
+    is_tool_read_only,
     set_read_only,
+    set_readonly_tools,
 )
 
 
@@ -195,3 +200,61 @@ class TestHasRequiredScopes:
         available = [GMAIL_MODIFY_SCOPE]
         required = [GMAIL_READONLY_SCOPE, DRIVE_READONLY_SCOPE]
         assert not has_required_scopes(available, required)
+
+
+class TestPerToolReadOnly:
+    """Tests for per-tool read-only mode (a subset of tools downgraded)."""
+
+    def setup_method(self):
+        set_read_only(False)
+
+    def teardown_method(self):
+        set_read_only(False)
+
+    def test_drive_readonly_gmail_full(self):
+        """gmail stays full while drive is downgraded to drive.readonly."""
+        set_readonly_tools(["drive"])
+        scopes = get_scopes_for_tools(["gmail", "drive"])
+        assert GMAIL_MODIFY_SCOPE in scopes
+        assert DRIVE_READONLY_SCOPE in scopes
+        assert DRIVE_SCOPE not in scopes
+        assert DRIVE_FILE_SCOPE not in scopes
+
+    def test_set_read_only_true_makes_all_tools_readonly(self):
+        """The boolean shim still puts every tool into the readonly set."""
+        set_read_only(True)
+        scopes = get_scopes_for_tools(["gmail", "drive"])
+        assert GMAIL_READONLY_SCOPE in scopes
+        assert DRIVE_READONLY_SCOPE in scopes
+        assert GMAIL_MODIFY_SCOPE not in scopes
+        assert DRIVE_SCOPE not in scopes
+
+    def test_is_read_only_mode_reflects_set_emptiness(self):
+        """is_read_only_mode() is True iff at least one tool is readonly."""
+        assert is_read_only_mode() is False
+        set_readonly_tools(["drive"])
+        assert is_read_only_mode() is True
+        assert is_tool_read_only("drive") is True
+        assert is_tool_read_only("gmail") is False
+
+    def test_set_readonly_tools_composes_by_union(self):
+        """Successive calls union into the set, matching --read-only composability."""
+        set_readonly_tools(["drive"])
+        set_readonly_tools(["calendar"])
+        readonly = get_readonly_tools()
+        assert readonly == {"drive", "calendar"}
+
+    def test_unknown_tool_in_readonly_set_is_noop_for_scopes(self):
+        """Validation is the CLI's job; at runtime an unknown name is harmless."""
+        set_readonly_tools(["bogus"])
+        scopes = get_scopes_for_tools(["gmail"])
+        assert GMAIL_MODIFY_SCOPE in scopes
+
+    def test_allowed_scopes_for_filter_matches_per_tool(self):
+        """The tool-registry filter sees full gmail scopes + readonly drive scopes."""
+        set_readonly_tools(["drive"])
+        allowed = set(get_allowed_scopes_for_filter(["gmail", "drive"]))
+        assert GMAIL_MODIFY_SCOPE in allowed
+        assert DRIVE_READONLY_SCOPE in allowed
+        assert DRIVE_SCOPE not in allowed
+        assert DRIVE_FILE_SCOPE not in allowed
