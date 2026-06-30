@@ -935,7 +935,6 @@ async def get_authenticated_google_service(
         # Ensure OAuth callback is available
         from auth.oauth_callback_server import ensure_oauth_callback_available
 
-        redirect_uri = get_oauth_redirect_uri()
         config = get_oauth_config()
         success, error_msg = ensure_oauth_callback_available(
             get_transport_mode(), config.port, config.base_uri
@@ -945,6 +944,10 @@ async def get_authenticated_google_service(
             raise GoogleAuthenticationError(
                 f"Cannot initiate OAuth flow - callback server unavailable{error_detail}"
             )
+
+        # Read the redirect URI AFTER the callback server has bound its port,
+        # so a stdio ephemeral-port fallback is reflected in the auth URL.
+        redirect_uri = get_oauth_redirect_uri()
 
         # Only force consent (which revokes existing refresh tokens) when we
         # don't have a stored refresh token at all. If one exists, let Google

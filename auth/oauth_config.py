@@ -96,6 +96,21 @@ class OAuthConfig:
             path = uri if uri.startswith("/") else f"/{uri}"
         return path or "/oauth2callback"
 
+    def update_runtime_port(self, port: int) -> None:
+        """Update the bound port at runtime and recompute the derived URLs.
+
+        Used by the stdio OAuth callback server when the configured port is
+        taken and it falls back to an OS-assigned ephemeral port. Recomputing
+        base_url and redirect_uri here keeps the redirect URI handed to Google
+        (and re-derived at token exchange) consistent with where the callback
+        server is actually listening. An explicit GOOGLE_OAUTH_REDIRECT_URI
+        override still wins, because _get_redirect_uri() honours it first.
+        """
+        self.port = port
+        self.base_url = f"{self.base_uri}:{self.port}"
+        self.redirect_uri = self._get_redirect_uri()
+        self.redirect_path = self._get_redirect_path(self.redirect_uri)
+
     def _apply_fastmcp_google_env(self) -> None:
         """Mirror legacy GOOGLE_* env vars into FastMCP Google provider settings."""
         if not self.client_id:

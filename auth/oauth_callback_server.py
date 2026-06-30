@@ -150,13 +150,41 @@ class MinimalOAuthServer:
         except Exception:
             hostname = "localhost"
 
+        # Try the configured port first; fall back to an OS-assigned ephemeral
+        # port if it is taken. In stdio mode the callback server is a throwaway
+        # that only lives for one auth flow, and Google's loopback OAuth accepts
+        # localhost on any port, so an ephemeral port is fully valid. This lets
+        # multiple stdio server instances (e.g. two Claude sessions, each of
+        # which launches both the personal and work servers) coexist instead of
+        # colliding on a single fixed port.
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((hostname, self.port))
         except OSError:
-            error_msg = f"Port {self.port} is already in use on {hostname}. Cannot start minimal OAuth server."
-            logger.error(error_msg)
-            return False, error_msg
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind((hostname, 0))
+                    ephemeral_port = s.getsockname()[1]
+            except OSError as e:
+                error_msg = f"Could not bind an OAuth callback port on {hostname}: {e}"
+                logger.error(error_msg)
+                return False, error_msg
+
+            logger.warning(
+                f"Port {self.port} is in use on {hostname}; falling back to "
+                f"ephemeral port {ephemeral_port} for the OAuth callback server."
+            )
+            self.port = ephemeral_port
+            # Propagate the actual port into the shared OAuth config so the
+            # redirect URI in the auth URL and at token exchange both match.
+            try:
+                from auth.oauth_config import get_oauth_config
+
+                get_oauth_config().update_runtime_port(ephemeral_port)
+            except Exception as e:
+                logger.error(
+                    f"Failed to update OAuth config with ephemeral port {ephemeral_port}: {e}"
+                )
 
         def run_server():
             """Run the server in a separate thread."""
