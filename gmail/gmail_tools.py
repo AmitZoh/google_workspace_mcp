@@ -7,6 +7,7 @@ This module provides MCP tools for interacting with the Gmail API.
 import logging
 import asyncio
 import base64
+import re
 import ssl
 import mimetypes
 from html.parser import HTMLParser
@@ -36,7 +37,17 @@ logger = logging.getLogger(__name__)
 GMAIL_BATCH_SIZE = 25
 GMAIL_REQUEST_DELAY = 0.1
 HTML_BODY_TRUNCATE_LIMIT = 20000
-GMAIL_METADATA_HEADERS = ["Subject", "From", "To", "Cc", "Reply-To", "Message-ID", "Date"]
+GMAIL_METADATA_HEADERS = [
+    "Subject",
+    "From",
+    "To",
+    "Cc",
+    "Reply-To",
+    "Message-ID",
+    "Date",
+    "List-Unsubscribe",
+    "List-Unsubscribe-Post",
+]
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -680,6 +691,20 @@ def _format_gmail_message_content(
         for i, link in enumerate(links, 1):
             content_lines.append(f"{i}. {link['text']}")
             content_lines.append(f"   URL: {link['url']}")
+
+    # RFC 8058 one-click unsubscribe: compliant senders publish the
+    # unsubscribe URL only in this header, not in the body links.
+    list_unsub = headers.get("List-Unsubscribe", "")
+    if list_unsub:
+        content_lines.append("\n--- UNSUBSCRIBE (RFC 8058) ---")
+        content_lines.append(f"List-Unsubscribe: {list_unsub}")
+        https_urls = re.findall(r"<(https?://[^>]+)>", list_unsub)
+        for url in https_urls:
+            content_lines.append(f"   URL: {url}")
+        if headers.get("List-Unsubscribe-Post", ""):
+            content_lines.append(
+                "   One-Click: yes (List-Unsubscribe-Post present — POST to the URL unsubscribes without a landing page)"
+            )
 
     if attachments:
         content_lines.append("\n--- ATTACHMENTS ---")

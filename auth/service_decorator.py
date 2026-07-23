@@ -361,6 +361,25 @@ def _extract_oauth20_user_email(
     bound_args.apply_defaults()
 
     user_google_email = bound_args.arguments.get("user_google_email")
+
+    # Single-user server: a configured USER_GOOGLE_EMAIL is authoritative.
+    # It fills a missing param and corrects a wrong one (harness-context
+    # addresses, +tag variants, cross-account mixups) — the caller never
+    # needs to know the mailbox address.
+    from core.config import USER_GOOGLE_EMAIL
+
+    if USER_GOOGLE_EMAIL:
+        if user_google_email and user_google_email != USER_GOOGLE_EMAIL:
+            logger.warning(
+                f"Overriding user_google_email '{user_google_email}' with configured "
+                f"USER_GOOGLE_EMAIL '{USER_GOOGLE_EMAIL}'"
+            )
+        # Sync the tool's own parameter too — kwargs is shared by reference
+        # with the wrapper, and FastMCP invokes tools with keyword arguments.
+        if "user_google_email" in kwargs:
+            kwargs["user_google_email"] = USER_GOOGLE_EMAIL
+        return USER_GOOGLE_EMAIL
+
     if not user_google_email:
         raise Exception("'user_google_email' parameter is required but was not found.")
     return user_google_email
